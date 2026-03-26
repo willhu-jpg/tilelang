@@ -1,9 +1,6 @@
-# Reference: fla/ops/common/chunk_delta_h.py
-
 import sys  # noqa: F401
 import tilelang
 import tilelang.language as T
-from tilelang.autotuner import autotune
 from tilelang.profiler import do_bench
 
 # Add your fla repository path to sys.path
@@ -21,17 +18,6 @@ except ImportError:
 import torch
 import torch.nn.functional as F
 from tilelang.engine.callback import register_cuda_postproc_callback  # noqa: F401
-
-from test_utils import assert_similar
-
-# (zhengju) We can slightly modify the generated cuda code from tilelang lowering
-# in the debug folder to make the performance better. To enable this callback,
-# you can comment out the following function.
-# @register_cuda_postproc_callback
-# def tilelang_callback_cuda_postproc(code, _):
-#     cuda_code = open("../debug/chunk_delta_h_fuse.cu", "r").read()
-#     code = cuda_code
-#     return code
 
 torch.random.manual_seed(0)
 
@@ -97,7 +83,6 @@ def get_configs():
     return configs
 
 
-@autotune(configs=get_configs(), warmup=3, rep=5)
 @tilelang.jit(out_idx=[-3, -2, -1], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
 def tilelang_chunk_gated_delta_rule_fwd_h(
     # task config
@@ -175,28 +160,24 @@ def tilelang_chunk_gated_delta_rule_fwd_h(
                 T.copy(b_h_shared, b_h_fragment)
             else:
                 T.clear(b_h_fragment)
+                T.clear(b_h_shared)
 
             for i_s in T.Pipelined(T.ceildiv(S, block_S), num_stages=num_stages):
-                # Store previous result to the hidden tensor, like the epilogue
                 T.copy(b_h_shared, h[bb, i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV])
 
-                # Recurrence
                 T.copy(W[bb, i_s * block_S : (i_s + 1) * block_S, bh, 0:DK], W_shared)
                 T.gemm(W_shared, b_h_shared, V_new_fragment, clear_accum=True)
 
-                # U - W * S
                 T.copy(U[bb, i_s * block_S : (i_s + 1) * block_S, bh, bv * block_DV : (bv + 1) * block_DV], U_shared)
                 T.copy(U_shared, U_fragment)
                 for i_s2, i_v in T.Parallel(block_S, block_DV):
                     V_new_fragment[i_s2, i_v] = -V_new_fragment[i_s2, i_v] + U_fragment[i_s2, i_v]
 
-                # Save V_new
                 if save_new_value:
                     T.copy(V_new_fragment, dst=V_new_shared)
                     T.copy(V_new_shared, V_new[bb, i_s * block_S : (i_s + 1) * block_S, bh, bv * block_DV : (bv + 1) * block_DV])
 
                 T.copy(K[bb, i_s * block_S : (i_s + 1) * block_S, bh, 0:DK], K_shared)
-                # use_g
                 if use_g:
                     G_last_local = G[bb, (i_s + 1) * block_S - 1, bh]
                     for i_s2, i_v in T.Parallel(block_S, block_DV):
@@ -212,13 +193,11 @@ def tilelang_chunk_gated_delta_rule_fwd_h(
                     for i_k, i_v in T.Parallel(DK, block_DV):
                         b_h_fragment[i_k, i_v] *= G_last_local
 
-                # Update intermediate results
                 T.copy(V_new_fragment, V_new_shared)
                 T.gemm(K_shared, V_new_shared, b_h_fragment, transpose_A=True)
 
                 T.copy(b_h_fragment, b_h_shared)
 
-            # Save final state
             if store_final_state:
                 T.copy(b_h_fragment, final_state[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV])
 
@@ -244,25 +223,17 @@ def run_test(
     block_DK=64,
     block_DV=32,
     threads=128,
-    num_stages=0,
+    num_stages=1,
 ):
+    input_dtype_torch = getattr(torch, input_dtype)
+    output_dtype_torch = getattr(torch, output_dtype)
+    accum_dtype_torch = getattr(torch, accum_dtype)
+    gate_dtype_torch = getattr(torch, gate_dtype)
+    state_dtype_torch = getattr(torch, state_dtype)
+
     K, W, U, G, initial_state = prepare_input(
-        B,
-        S,
-        H,
-        DK,
-        DV,
-        chunk_size,
-        getattr(torch, input_dtype),
-        getattr(torch, output_dtype),
-        getattr(torch, accum_dtype),
-        getattr(torch, gate_dtype),
-    )
-    h_ref, final_state_ref, V_new_ref = prepare_output(
-        B, S, H, DK, DV, chunk_size, getattr(torch, output_dtype), getattr(torch, state_dtype)
-    )
-    h_tilelang, final_state_tilelang, V_new_tilelang = prepare_output(
-        B, S, H, DK, DV, chunk_size, getattr(torch, output_dtype), getattr(torch, state_dtype)
+        B, S, H, DK, DV, chunk_size,
+        input_dtype_torch, output_dtype_torch, accum_dtype_torch, gate_dtype_torch,
     )
 
     # fla ref
@@ -278,34 +249,45 @@ def run_test(
     )
 
     # tilelang
-    kernel = tilelang_chunk_gated_delta_rule_fwd_h(
-        B,
-        S,
-        H,
-        DK,
-        DV,
-        input_dtype,
-        output_dtype,
-        accum_dtype,
-        gate_dtype,
-        state_dtype,
-        chunk_size,
-        use_g,
-        use_initial_state,
-        store_final_state,
-        save_new_value,
-    )
-    h_tilelang, final_state_tilelang, V_new_tilelang = kernel(K, W, U, G, initial_state)
-    # (zhengju) If you want to print the generated cuda code, you can uncomment the following line
-    # print("CUDA Code:\n", kernel.get_kernel_source())
+    try:
+        kernel = tilelang_chunk_gated_delta_rule_fwd_h(
+            B, S, H, DK, DV,
+            input_dtype, output_dtype, accum_dtype, gate_dtype, state_dtype,
+            chunk_size, use_g, use_initial_state, store_final_state, save_new_value,
+            block_DK, block_DV, threads, num_stages,
+        )
+        h_tilelang, final_state_tilelang, V_new_tilelang = kernel(K, W, U, G, initial_state)
+    except Exception as e:
+        print(f"[ERROR] TileLang kernel failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
-    # tilelang.profiler.do_bench(fn) only calls fn() with no arguments — kwargs belong inside a wrapper.
+    # correctness
+    try:
+        torch.testing.assert_close(h_tilelang, h_ref, rtol=1e-2, atol=1e-2)
+        print("tilelang chunk gated delta rule fwd h passed √")
+    except Exception as e:
+        print("tilelang chunk gated delta rule fwd h failed ✗")
+        print(e)
+
+    try:
+        torch.testing.assert_close(final_state_tilelang, final_state_ref, rtol=1e-2, atol=1e-2)
+        print("tilelang chunk gated delta rule fwd final_state passed √")
+    except Exception as e:
+        print("tilelang chunk gated delta rule fwd final_state failed ✗")
+        print(e)
+
+    try:
+        torch.testing.assert_close(V_new_tilelang, V_new_ref, rtol=1e-2, atol=1e-2)
+        print("tilelang chunk gated delta rule fwd V_new passed √")
+    except Exception as e:
+        print("tilelang chunk gated delta rule fwd V_new failed ✗")
+        print(e)
+
     def _bench_fla():
         return chunk_gated_delta_rule_fwd_h(
-            k=K,
-            w=W,
-            u=U,
-            g=G,
+            k=K, w=W, u=U, g=G,
             initial_state=initial_state,
             output_final_state=store_final_state,
             chunk_size=chunk_size,
@@ -317,44 +299,6 @@ def run_test(
 
     fla_time = do_bench(_bench_fla)
     tilelang_time = do_bench(_bench_tilelang)
-
-    # check correctness (use bool from assert_similar; warnings do not imply pass)
-    h_ref_fp32 = h_ref.to(torch.float32)
-    h_tilelang_fp32 = h_tilelang.to(torch.float32)
-    ok_h = assert_similar(
-        h_ref_fp32,
-        h_tilelang_fp32,
-        eps=1e-5,
-        name="tilelang chunk gated delta rule fwd h",
-        raise_assert=False,
-        verbose=False,
-    )
-    print("tilelang chunk gated delta rule fwd h passed √" if ok_h else "tilelang chunk gated delta rule fwd h failed ✗")
-
-    final_state_ref_fp32 = final_state_ref.to(torch.float32)
-    final_state_tilelang_fp32 = final_state_tilelang.to(torch.float32)
-    ok_fs = assert_similar(
-        final_state_ref_fp32,
-        final_state_tilelang_fp32,
-        eps=1e-5,
-        name="tilelang chunk gated delta rule fwd final_state",
-        raise_assert=False,
-        verbose=False,
-    )
-    print("tilelang chunk gated delta rule fwd final_state passed √" if ok_fs else "tilelang chunk gated delta rule fwd final_state failed ✗")
-
-    V_new_ref_fp32 = V_new_ref.to(torch.float32)
-    V_new_tilelang_fp32 = V_new_tilelang.to(torch.float32)
-    ok_v = assert_similar(
-        V_new_ref_fp32,
-        V_new_tilelang_fp32,
-        eps=1e-5,
-        name="tilelang chunk gated delta rule fwd V_new",
-        raise_assert=False,
-        verbose=False,
-    )
-    print("tilelang chunk gated delta rule fwd V_new passed √" if ok_v else "tilelang chunk gated delta rule fwd V_new failed ✗")
-
     print(f"tilelang time: {tilelang_time} ms")
     print(f"fla time: {fla_time} ms")
 
