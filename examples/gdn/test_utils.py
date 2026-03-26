@@ -15,17 +15,26 @@ def calc_sim(x, y, name="tensor"):
     return sim
 
 
-def assert_similar(x, y, eps=1e-8, name="tensor", data="", raise_assert=True):
+def assert_similar(x, y, eps=1e-8, name="tensor", data="", raise_assert=True, **kwargs):
+    """Return True if tensors match within similarity eps; False if not (when raise_assert is False).
+
+    Optional: ``verbose=False`` (via kwargs) suppresses the success line print.
+    """
+    verbose = bool(kwargs.pop("verbose", True))
+    if kwargs:
+        raise TypeError(f"assert_similar() got unexpected keyword arguments {sorted(kwargs.keys())}")
     x_mask = torch.isfinite(x)
     y_mask = torch.isfinite(y)
     if not torch.all(x_mask == y_mask):
         print_red_warning(f"{name} Error: isfinite mask mismatch")
         if raise_assert:
             raise AssertionError
+        return False
     if not torch.isclose(x.masked_fill(x_mask, 0), y.masked_fill(y_mask, 0), rtol=0, atol=0, equal_nan=True).all():
         print_red_warning(f"{name} Error: nonfinite value mismatch")
         if raise_assert:
             raise AssertionError
+        return False
     x = x.masked_fill(~x_mask, 0)
     y = y.masked_fill(~y_mask, 0)
     sim = calc_sim(x, y, name)
@@ -34,5 +43,7 @@ def assert_similar(x, y, eps=1e-8, name="tensor", data="", raise_assert=True):
         print_red_warning(f"{name} Error: {diff}")
         if raise_assert:
             raise AssertionError
-    else:
+        return False
+    if verbose:
         print(f"{name} {data} passed")
+    return True

@@ -1,12 +1,14 @@
 # Reference: fla/ops/gated_delta_rule/wy_fast.py
 
+import os
 import tilelang
 import tilelang.language as T
+from tilelang.profiler import do_bench
 import sys  # noqa: F401
 
 # Add your fla repository path to sys.path
 # Currently we use the fla repository from the flash-linear-attention project at commit id f03cb3ae
-# sys.path.insert(0, "/home/tzj/flash-linear-attention")
+sys.path.insert(0, "/home/willhustanfordedu/flash-linear-attention")
 try:
     import fla
 
@@ -175,7 +177,8 @@ def run_test(
         threads=threads,
         num_stages=num_stages,
     )
-    print(kernel.get_kernel_source())
+    if os.environ.get("TILELANG_PRINT_CUDA"):
+        print(kernel.get_kernel_source())
     W_tilelang, U_tilelang = kernel(K, V, Beta, G, A)
 
     try:
@@ -191,12 +194,23 @@ def run_test(
         print("tilelang recompute u failed ✗")
         print(e)
 
+    def _bench_fla():
+        return recompute_w_u_fwd(K, V, Beta, G, A, None)
+
+    def _bench_tilelang():
+        return kernel(K, V, Beta, G, A)
+
+    fla_time = do_bench(_bench_fla)
+    tilelang_time = do_bench(_bench_tilelang)
+    print(f"tilelang time: {tilelang_time} ms")
+    print(f"fla time: {fla_time} ms")
+
 
 def main():
     run_test(
-        B=1,
-        S=32768,
-        H=32,
+        B=8,
+        S=4096,
+        H=16,
         DK=128,
         DV=128,
         chunk_size=64,

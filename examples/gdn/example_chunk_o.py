@@ -2,11 +2,12 @@
 
 import tilelang
 import tilelang.language as T
+from tilelang.profiler import do_bench
 import sys  # noqa: F401
 
 # Add your fla repository path to sys.path
 # Currently we use the fla repository from the flash-linear-attention project at commit id f03cb3ae
-# sys.path.insert(0, "/home/tzj/flash-linear-attention")
+sys.path.insert(0, "/home/willhustanfordedu/flash-linear-attention")
 try:
     import fla
 
@@ -177,7 +178,7 @@ def run_test(
     scale = 1.0 / DK**0.5
 
     O_ref = prepare_output(B, S, H, DK, DV, chunk_size, output_dtype_torch)
-    O_ref = chunk_fwd_o(Q, K, V, HIDDEN, G, scale, chunk_size=chunk_size)
+    O_ref = chunk_fwd_o(Q, K, V, HIDDEN, G, scale=scale, chunk_size=chunk_size)
 
     block_S = chunk_size
     O_tilelang = prepare_output(B, S, H, DK, DV, chunk_size, output_dtype_torch)
@@ -209,12 +210,23 @@ def run_test(
         print("tilelang chunk fwd o failed ✗")
         print(e)
 
+    def _bench_fla():
+        return chunk_fwd_o(Q, K, V, HIDDEN, G, scale=scale, chunk_size=chunk_size)
+
+    def _bench_tilelang():
+        return kernel(Q, K, V, HIDDEN, G)
+
+    fla_time = do_bench(_bench_fla)
+    tilelang_time = do_bench(_bench_tilelang)
+    print(f"tilelang time: {tilelang_time} ms")
+    print(f"fla time: {fla_time} ms")
+
 
 def main():
     run_test(
-        B=1,
-        S=32768,
-        H=32,
+        B=8,
+        S=4096,
+        H=16,
         DK=128,
         DV=128,
         chunk_size=64,

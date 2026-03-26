@@ -3,11 +3,12 @@
 
 import tilelang
 import tilelang.language as T
+from tilelang.profiler import do_bench
 import sys  # noqa: F401
 
 # Add your fla repository path to sys.path
 # Currently we use the fla repository from the flash-linear-attention project at commit id f03cb3ae
-# sys.path.insert(0, "/home/tzj/flash-linear-attention")
+sys.path.insert(0, "/home/willhustanfordedu/flash-linear-attention")
 try:
     import fla
 
@@ -129,9 +130,7 @@ def run_test(
         threads=threads,
         use_fragment=use_fragment,
     )
-    torch.cuda.profiler.start()
     G_new_tilelang = kernel(G)
-    torch.cuda.profiler.stop()
     try:
         torch.testing.assert_close(G_new_tilelang, G_new_ref, rtol=1e-2, atol=1e-2)
         print("tilelang cumsum passed √")
@@ -145,12 +144,29 @@ def run_test(
         print("G_new_ref:")
         print(G_new_ref.view(-1))
 
+    def _bench_fla():
+        return chunk_local_cumsum_scalar(
+            g=G,
+            chunk_size=chunk_size,
+            reverse=reverse,
+            head_first=head_first,
+            output_dtype=getattr(torch, output_dtype),
+        )
+
+    def _bench_tilelang():
+        return kernel(G)
+
+    fla_time = do_bench(_bench_fla)
+    tilelang_time = do_bench(_bench_tilelang)
+    print(f"tilelang time: {tilelang_time} ms")
+    print(f"fla time: {fla_time} ms")
+
 
 def main():
     run_test(
-        B=1,
-        S=32768,
-        H=32,
+        B=8,
+        S=4096,
+        H=16,
         chunk_size=64,
         reverse=True,
         head_first=False,

@@ -8,7 +8,7 @@ from tilelang.profiler import do_bench
 
 # Add your fla repository path to sys.path
 # Currently we use the fla repository from the flash-linear-attention project at commit id f03cb3ae
-# sys.path.insert(0, "/home/tzj/flash-linear-attention")
+sys.path.insert(0, "/home/willhustanfordedu/flash-linear-attention")
 try:
     import fla
 
@@ -299,52 +299,61 @@ def run_test(
     # (zhengju) If you want to print the generated cuda code, you can uncomment the following line
     # print("CUDA Code:\n", kernel.get_kernel_source())
 
-    fla_time = do_bench(
-        chunk_gated_delta_rule_fwd_h,
-        k=K,
-        w=W,
-        u=U,
-        g=G,
-        initial_state=initial_state,
-        output_final_state=store_final_state,
-        chunk_size=chunk_size,
-        save_new_value=save_new_value,
-    )
-    tilelang_time = do_bench(kernel, K, W, U, G, initial_state)
-
-    # check correctness
-    try:
-        h_ref_fp32 = h_ref.to(torch.float32)
-        h_tilelang_fp32 = h_tilelang.to(torch.float32)
-        assert_similar(h_ref_fp32, h_tilelang_fp32, eps=1e-5, name="tilelang chunk gated delta rule fwd h", raise_assert=False)
-        print("tilelang chunk gated delta rule fwd h passed √")
-    except Exception as e:
-        print("tilelang chunk gated delta rule fwd h failed ✗")
-        print(e)
-
-    try:
-        final_state_ref_fp32 = final_state_ref.to(torch.float32)
-        final_state_tilelang_fp32 = final_state_tilelang.to(torch.float32)
-        assert_similar(
-            final_state_ref_fp32,
-            final_state_tilelang_fp32,
-            eps=1e-5,
-            name="tilelang chunk gated delta rule fwd final_state",
-            raise_assert=False,
+    # tilelang.profiler.do_bench(fn) only calls fn() with no arguments — kwargs belong inside a wrapper.
+    def _bench_fla():
+        return chunk_gated_delta_rule_fwd_h(
+            k=K,
+            w=W,
+            u=U,
+            g=G,
+            initial_state=initial_state,
+            output_final_state=store_final_state,
+            chunk_size=chunk_size,
+            save_new_value=save_new_value,
         )
-        print("tilelang chunk gated delta rule fwd final_state passed √")
-    except Exception as e:
-        print("tilelang chunk gated delta rule fwd final_state failed ✗")
-        print(e)
 
-    try:
-        V_new_ref_fp32 = V_new_ref.to(torch.float32)
-        V_new_tilelang_fp32 = V_new_tilelang.to(torch.float32)
-        assert_similar(V_new_ref_fp32, V_new_tilelang_fp32, eps=1e-5, name="tilelang chunk gated delta rule fwd V_new", raise_assert=False)
-        print("tilelang chunk gated delta rule fwd V_new passed √")
-    except Exception as e:
-        print("tilelang chunk gated delta rule fwd V_new failed ✗")
-        print(e)
+    def _bench_tilelang():
+        return kernel(K, W, U, G, initial_state)
+
+    fla_time = do_bench(_bench_fla)
+    tilelang_time = do_bench(_bench_tilelang)
+
+    # check correctness (use bool from assert_similar; warnings do not imply pass)
+    h_ref_fp32 = h_ref.to(torch.float32)
+    h_tilelang_fp32 = h_tilelang.to(torch.float32)
+    ok_h = assert_similar(
+        h_ref_fp32,
+        h_tilelang_fp32,
+        eps=1e-5,
+        name="tilelang chunk gated delta rule fwd h",
+        raise_assert=False,
+        verbose=False,
+    )
+    print("tilelang chunk gated delta rule fwd h passed √" if ok_h else "tilelang chunk gated delta rule fwd h failed ✗")
+
+    final_state_ref_fp32 = final_state_ref.to(torch.float32)
+    final_state_tilelang_fp32 = final_state_tilelang.to(torch.float32)
+    ok_fs = assert_similar(
+        final_state_ref_fp32,
+        final_state_tilelang_fp32,
+        eps=1e-5,
+        name="tilelang chunk gated delta rule fwd final_state",
+        raise_assert=False,
+        verbose=False,
+    )
+    print("tilelang chunk gated delta rule fwd final_state passed √" if ok_fs else "tilelang chunk gated delta rule fwd final_state failed ✗")
+
+    V_new_ref_fp32 = V_new_ref.to(torch.float32)
+    V_new_tilelang_fp32 = V_new_tilelang.to(torch.float32)
+    ok_v = assert_similar(
+        V_new_ref_fp32,
+        V_new_tilelang_fp32,
+        eps=1e-5,
+        name="tilelang chunk gated delta rule fwd V_new",
+        raise_assert=False,
+        verbose=False,
+    )
+    print("tilelang chunk gated delta rule fwd V_new passed √" if ok_v else "tilelang chunk gated delta rule fwd V_new failed ✗")
 
     print(f"tilelang time: {tilelang_time} ms")
     print(f"fla time: {fla_time} ms")
@@ -352,9 +361,9 @@ def run_test(
 
 def main():
     run_test(
-        B=1,
-        S=32768,
-        H=32,
+        B=8,
+        S=4096,
+        H=16,
         DK=128,
         DV=128,
         input_dtype=T.bfloat16,
