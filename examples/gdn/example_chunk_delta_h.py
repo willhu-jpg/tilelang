@@ -160,7 +160,6 @@ def tilelang_chunk_gated_delta_rule_fwd_h(
                 T.copy(b_h_shared, b_h_fragment)
             else:
                 T.clear(b_h_fragment)
-                T.clear(b_h_shared)
 
             for i_s in T.Pipelined(T.ceildiv(S, block_S), num_stages=num_stages):
                 T.copy(b_h_shared, h[bb, i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV])
@@ -302,7 +301,6 @@ def run_test(
     print(f"tilelang time: {tilelang_time} ms")
     print(f"fla time: {fla_time} ms")
 
-
 def main():
     run_test(
         B=8,
@@ -317,7 +315,7 @@ def main():
         state_dtype=T.float32,
         chunk_size=64,
         use_g=True,
-        use_initial_state=False,
+        use_initial_state=True,
         store_final_state=True,
         save_new_value=True,
         block_DK=32,
