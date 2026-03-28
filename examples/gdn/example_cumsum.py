@@ -8,7 +8,7 @@ import sys  # noqa: F401
 
 # Add your fla repository path to sys.path
 # Currently we use the fla repository from the flash-linear-attention project at commit id f03cb3ae
-sys.path.insert(0, "/home/willhustanfordedu/flash-linear-attention")
+# sys.path.insert(0, "/home/tzj/flash-linear-attention")
 try:
     import fla
 
